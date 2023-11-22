@@ -7,13 +7,31 @@ use Illuminate\Support\Facades\Http;
 
 class LeadService
 {
+    /**
+     * Создать сделку в Bitrix CRM
+     * Отправить уведомление в Телеграм канал
+     * Сохранить сделку в БД при успешном создании
+     *
+     * @param array{
+     *     full_name: string,
+     *     birth_date: string,
+     *     phone: string,
+     *     email: string,
+     *     comment: string,
+     * } $data
+     * @return array{
+     *     success: boolean,
+     *     message: string,
+     * }
+     */
     public function createLead(array $data): array
     {
         $response = $this->addLeadToBitrixCrm($data);
+        $leadStatusText = $this->getLeadStatusText($response, $data);
 
-        if (isset($response['error'])) {
-            $this->reportLeadErrorToTelegramChannel($response, $data);
+        $this->reportToTelegramChannel($leadStatusText);
 
+        if (isset($response['error_description'])) {
             return [
                 'success' => false,
                 'message' => $response['error_description'],
@@ -22,14 +40,22 @@ class LeadService
 
         Lead::create($data);
 
-        $this->reportLeadCreatedToTelegramChannel($response, $data);
-
         return [
             'success' => true,
             'message' => 'Сделка успешно создана',
         ];
     }
 
+    /**
+     * @param array{
+     *     full_name: string,
+     *     birth_date: string,
+     *     phone: string,
+     *     email: string,
+     *     comment: string,
+     * } $data
+     * @return array{result: int}|array{error_description: string}
+     */
     private function addLeadToBitrixCrm(array $data): array
     {
         $nameParts = preg_split('/\s+/', $data['full_name']);
@@ -45,49 +71,50 @@ class LeadService
         ])->json();
     }
 
-    private function reportLeadCreatedToTelegramChannel(
-        array $bitrixResponse,
-        array $leadData
-    ): void
-    {
-        $this->reportToTelegramChannel(
-            "Новая сделка\n"
-            . sprintf(
-                config('bitrix-crm.lead_url'),
-                $bitrixResponse['result']
-            )
-            . "\n"
-            . $this->formatLeadData($leadData)
-        );
-    }
-
-    private function reportLeadErrorToTelegramChannel(
-        array $bitrixResponse,
-        array $leadData
-    ): void
-    {
-        $this->reportToTelegramChannel(
-            "Ошибка создания сделки\n"
-            . $bitrixResponse['error_description']
-            . "\n"
-            . $this->formatLeadData($leadData)
-        );
-    }
-
+    /**
+     * @param string $text
+     * @return void
+     */
     private function reportToTelegramChannel(string $text): void
     {
         Http::get(config('telegram.send_message_url'), [
             'chat_id' => config('telegram.lead_channel_id'),
             'text' => $text,
+            'disable_web_page_preview' => true,
         ]);
     }
 
-    private function formatLeadData(array $data): string
+    /**
+     * @param array $bitrixResponse
+     * @param array{
+     *     full_name: string,
+     *     birth_date: string,
+     *     phone: string,
+     *     email: string,
+     *     comment: string,
+     * } $leadData
+     * @return string
+     */
+    private function getLeadStatusText(
+        array $bitrixResponse,
+        array $leadData
+    ): string
     {
-        return "ФИО клиента: $data[full_name]\n"
-            . "Дата рождения клиента: $data[birth_date]\n"
-            . "Телефон клиента: $data[phone]\n"
-            . "Электронная почта клиента: $data[email]\n"
-            . "Комментарий: $data[comment]";
+        $status = isset($bitrixResponse['result']) ? (
+            "Новая сделка\n" . sprintf(
+                config('bitrix-crm.lead_url'),
+                $bitrixResponse['result']
+            )
+        ) : (
+            "Ошибка создания сделки\n"
+            . $bitrixResponse['error_description']
+        );
+
+        return "$status\n"
+            . "ФИО клиента: $leadData[full_name]\n"
+            . "Дата рождения клиента: $leadData[birth_date]\n"
+            . "Телефон клиента: $leadData[phone]\n"
+            . "Электронная почта клиента: $leadData[email]\n"
+            . "Комментарий: $leadData[comment]";
     }
 }
